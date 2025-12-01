@@ -176,7 +176,8 @@ def main():
         st.title("Centro de Comando")
         senha = st.sidebar.text_input("Senha Admin", type="password")
         
-        if senha == "admin123":
+        if senha == st.secrets["ADMIN_PASS"]:
+            st.success("Acesso Concedido")
             # MUDANÇA AQUI: Nomes das abas alterados
             tab_daily, tab_hist, tab_team = st.tabs(["📢 Visão Daily", "🛠️ Gerenciar Registros", "👥 Gerenciar Time"])
             

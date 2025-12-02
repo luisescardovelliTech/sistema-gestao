@@ -80,6 +80,13 @@ def ler_registros():
     conn = init_connection()
     df = pd.read_sql("SELECT * FROM registro_ponto ORDER BY id DESC", conn)
     conn.close()
+    
+    # Converter timestamp para horário de Brasília e formatar dd/mm/aaaa hh:mm
+    if not df.empty and 'timestamp' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+        df['timestamp'] = df['timestamp'].dt.tz_convert(FUSO_HORARIO)
+        df['timestamp'] = df['timestamp'].dt.strftime('%d/%m/%Y %H:%M')
+    
     return df
 
 def excluir_registro(id_registro):
@@ -89,10 +96,11 @@ def excluir_registro(id_registro):
     conn.commit()
     conn.close()
 
-def editar_registro(id_registro, projeto, observacao):
+def editar_registro(id_registro, novo_projeto, nova_observacao):
     conn = init_connection()
     c = conn.cursor()
-    c.execute("UPDATE registro_ponto SET projeto = %s, observacao = %s WHERE id = %s", (projeto, observacao, id_registro))
+    query = "UPDATE registro_ponto SET projeto = %s, observacao = %s WHERE id = %s"
+    c.execute(query, (novo_projeto, nova_observacao, id_registro))
     conn.commit()
     conn.close()
 
@@ -121,7 +129,6 @@ def main():
     # ==========================
     if modo == OPCAO_DEV:
         st.title("Painel do Desenvolvedor")
-        # MUDANÇA AQUI: Nome da aba alterado
         tab_registro, tab_daily = st.tabs(["⏱️ Registrar Atividade", "📋 Preencher Daily"])
         
         with tab_registro:
@@ -178,7 +185,6 @@ def main():
         
         if senha == st.secrets["ADMIN_PASS"]:
             st.success("Acesso Concedido")
-            # MUDANÇA AQUI: Nomes das abas alterados
             tab_daily, tab_hist, tab_team = st.tabs(["📢 Visão Daily", "🛠️ Gerenciar Registros", "👥 Gerenciar Time"])
             
             # --- DAILY ---
@@ -200,31 +206,84 @@ def main():
             # --- CRUD REGISTROS ---
             with tab_hist:
                 st.subheader("Histórico de Atividades")
+                
+                # Carregar registros
                 df_registros = ler_registros()
-                st.dataframe(df_registros, hide_index=True, use_container_width=True)
                 
-                st.divider()
-                c_edit, c_del = st.columns(2)
-                
-                with c_edit:
-                    st.write("✏️ **Corrigir Registro**")
-                    with st.form("edit_form"):
-                        id_edit = st.number_input("ID para editar", step=1, min_value=1)
-                        novo_proj = st.text_input("Novo Projeto")
-                        nova_obs = st.text_input("Nova Observação")
-                        if st.form_submit_button("Salvar Correção"):
-                            editar_registro(id_edit, novo_proj, nova_obs)
-                            st.success(f"ID {id_edit} atualizado!")
+                if not df_registros.empty:
+                    # --- FILTROS ---
+                    st.markdown("### 🔍 Filtros de Busca")
+                    col_f1, col_f2, col_f3 = st.columns(3)
+                    
+                    with col_f1:
+                        funcionarios_unicos = ["Todos"] + sorted(df_registros['funcionario'].unique().tolist())
+                        filtro_func = st.selectbox("Filtrar por Funcionário", funcionarios_unicos)
+                    
+                    with col_f2:
+                        projetos_unicos = ["Todos"] + sorted(df_registros['projeto'].unique().tolist())
+                        filtro_proj = st.selectbox("Filtrar por Projeto", projetos_unicos)
+                    
+                    with col_f3:
+                        if st.button("🔄 Limpar Filtros"):
                             st.rerun()
-                
-                with c_del:
-                    st.write("🗑️ **Remover Registro**")
-                    with st.form("del_form"):
-                        id_del = st.number_input("ID para remover", step=1, min_value=1)
-                        if st.form_submit_button("Remover Definitivamente"):
-                            excluir_registro(id_del)
-                            st.error(f"ID {id_del} removido.")
-                            st.rerun()
+                    
+                    # Aplicar filtros
+                    df_filtrado = df_registros.copy()
+                    if filtro_func != "Todos":
+                        df_filtrado = df_filtrado[df_filtrado['funcionario'] == filtro_func]
+                    if filtro_proj != "Todos":
+                        df_filtrado = df_filtrado[df_filtrado['projeto'] == filtro_proj]
+                    
+                    st.info(f"📊 Exibindo **{len(df_filtrado)}** de **{len(df_registros)}** registros. **Selecione uma linha para editar ou excluir.**")
+                    
+                    # Tabela com Seleção
+                    event = st.dataframe(
+                        df_filtrado,
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                    
+                    # Lógica de Seleção
+                    if event.selection.rows:
+                        idx_selecionado = event.selection.rows[0]
+                        registro_selecionado = df_filtrado.iloc[idx_selecionado]
+                        # CORREÇÃO: Converter numpy.int64 para int nativo do Python
+                        id_sel = int(registro_selecionado['id'])
+                        
+                        st.divider()
+                        st.markdown(f"### 👉 Registro Selecionado: ID {id_sel}")
+                        
+                        col_edit, col_del = st.columns(2)
+                        
+                        # --- EDITAR ---
+                        with col_edit:
+                            with st.expander("✏️ **Editar Registro**", expanded=True):
+                                with st.form(f"edit_form_{id_sel}"):
+                                    novo_proj = st.text_input("Projeto", value=registro_selecionado['projeto'])
+                                    nova_obs = st.text_input("Observação", value=registro_selecionado['observacao'])
+                                    if st.form_submit_button("💾 Salvar Alterações"):
+                                        editar_registro(id_sel, novo_proj, nova_obs)
+                                        st.success("✅ Atualizado com sucesso!")
+                                        st.rerun()
+                        
+                        # --- EXCLUIR ---
+                        with col_del:
+                            with st.expander("🗑️ **Excluir Registro**", expanded=True):
+                                with st.form(f"del_form_{id_sel}"):
+                                    st.warning(f"Tem certeza que deseja excluir o registro de **{registro_selecionado['funcionario']}**?")
+                                    confirmacao = st.text_input("Digite 'CONFIRMAR' para excluir", type="default")
+                                    if st.form_submit_button("⚠️ Excluir Definitivamente"):
+                                        if confirmacao.upper() == "CONFIRMAR":
+                                            excluir_registro(id_sel)
+                                            st.success("✅ Registro excluído!")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Digite 'CONFIRMAR' corretamente.")
+
+                else:
+                    st.info("Nenhum registro encontrado.")
 
             # --- GESTÃO TIME ---
             with tab_team:
@@ -251,7 +310,7 @@ def main():
                             st.warning(f"Acesso de {nome_rem} revogado.")
                             st.rerun()
 
-        else:
+        elif senha:
             st.error("Senha Incorreta")
 
 if __name__ == '__main__':
